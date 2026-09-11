@@ -2,6 +2,8 @@
 *__pycache__*
 .vscode
 .venv
+*.out
+*.png
 
 dataset_3d/
 pretrained/

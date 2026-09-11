@@ -27,45 +27,45 @@ class Encoder(nn.Module):
         # Only downsample in H and W, NOT in depth D
         
         # Initial conv
-        self.conv_in = nn.Conv3d(self.in_channels, 128, kernel_size=self.kernel_size, padding=padding)
+        self.conv_in = nn.Conv3d(self.in_channels, 64, kernel_size=self.kernel_size, padding=padding) #128
         
         # FiLM conditioning after initial conv (when conditional=True)
         if self.conditional:
-            self.film_in = FiLM(condition_dim=1, feature_channels=128)
+            self.film_in = FiLM(condition_dim=1, feature_channels=64) #128
         
         # Stage 1: 128 channels
         if self.conditional:
-            self.res1_1 = ConditionalResidualBlock(128, 128, conditional=True, condition_dim=1)
-            self.res1_2 = ConditionalResidualBlock(128, 128, conditional=True, condition_dim=1)
+            self.res1_1 = ConditionalResidualBlock(64, 64, conditional=True, condition_dim=1) #128,128
+            self.res1_2 = ConditionalResidualBlock(64, 64, conditional=True, condition_dim=1) #128,128
         else:
-            self.res1_1 = ResidualBlock(128, 128)
-            self.res1_2 = ResidualBlock(128, 128)
+            self.res1_1 = ResidualBlock(64, 64) #128,128
+            self.res1_2 = ResidualBlock(64, 64) #128,128
         
         # Downsample 1: H/2, W/2
-        self.down1 = nn.Conv3d(128, 128, kernel_size=self.kernel_size, stride=(1, 2, 2), padding=0)
+        self.down1 = nn.Conv3d(64, 64, kernel_size=self.kernel_size, stride=(1, 2, 2), padding=0) #128,128
         
         # Stage 2: 256 channels
         if self.conditional:
-            self.res2_1 = ConditionalResidualBlock(128, 256, conditional=True, condition_dim=1)
-            self.res2_2 = ConditionalResidualBlock(256, 256, conditional=True, condition_dim=1)
+            self.res2_1 = ConditionalResidualBlock(64, 128, conditional=True, condition_dim=1) #128,256
+            self.res2_2 = ConditionalResidualBlock(128, 128, conditional=True, condition_dim=1) #256,256
         else:
-            self.res2_1 = ResidualBlock(128, 256)
-            self.res2_2 = ResidualBlock(256, 256)
+            self.res2_1 = ResidualBlock(64, 128) #128,256
+            self.res2_2 = ResidualBlock(128, 128) #256,256
         
         # Downsample 2: H/4, W/4
-        self.down2 = nn.Conv3d(256, 256, kernel_size=self.kernel_size, stride=(1, 2, 2), padding=0)
+        self.down2 = nn.Conv3d(128, 128, kernel_size=self.kernel_size, stride=(1, 2, 2), padding=0) #256,256
         
         # Stage 3: 512 channels
         if self.conditional:
-            self.res3_1 = ConditionalResidualBlock(256, 512, conditional=True, condition_dim=1)
-            self.res3_2 = ConditionalResidualBlock(512, 512, conditional=True, condition_dim=1)
+            self.res3_1 = ConditionalResidualBlock(128, 256, conditional=True, condition_dim=1) #256,512
+            self.res3_2 = ConditionalResidualBlock(256, 256, conditional=True, condition_dim=1) #512,512
         else:
-            self.res3_1 = ResidualBlock(256, 512)
-            self.res3_2 = ResidualBlock(512, 512)
+            self.res3_1 = ResidualBlock(128, 256) #256,512
+            self.res3_2 = ResidualBlock(256, 256) #512,512
         
         # Final layers
-        self.norm_out = nn.GroupNorm(num_groups=32, num_channels=512)
-        self.conv_out = nn.Conv3d(512, 2*self.out_channels, kernel_size=self.kernel_size, padding=padding)
+        self.norm_out = nn.GroupNorm(num_groups=32, num_channels=256) #512
+        self.conv_out = nn.Conv3d(256, 2*self.out_channels, kernel_size=self.kernel_size, padding=padding)
         
         # Final FiLM on latent (optional, but can help differentiate latent space)
         if self.conditional:
@@ -146,6 +146,8 @@ class Encoder(nn.Module):
 
     def sample(self, mu: torch.Tensor, logvar: torch.Tensor):
         std = torch.exp(0.5*logvar)
+        # set random seed for reproducibility
+        # torch.manual_seed(0)
         eps = torch.randn_like(std)
         return mu + eps * std
     

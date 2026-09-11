@@ -262,7 +262,7 @@ def main():
         # Get prediction data: (slices, 3, H, W)
         pred_np = to_numpy_plt(prediction)
         num_slices = pred_np.shape[0]
-        middle_slice = num_slices // 2
+        middle_slice = 3 #num_slices // 2
         
         # Calculate velocity magnitude
         pred_mag = np.sqrt(np.sum(pred_np**2, axis=1))  # (slices, H, W)
@@ -399,8 +399,8 @@ def main():
             cbar.set_label('Vy (m/s)')
         
         plt.tight_layout()
-        plt.savefig('velocity_field_comparison.png', dpi=150, bbox_inches='tight')
-        print("Saved 2D visualization to 'velocity_field_comparison.png'")
+        plt.savefig(f'Inference/velocity_field_comparison_slice_{middle_slice}.png', dpi=150, bbox_inches='tight')
+        print(f"Saved 2D visualization to 'Inference/velocity_field_comparison_slice_{middle_slice}.png'")
         plt.show()
         
     except Exception as e:

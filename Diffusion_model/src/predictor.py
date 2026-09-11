@@ -2,26 +2,21 @@
 Predictor classes for flow field prediction.
 
 This module contains the `LatentDiffusionPredictor` - the main predictor class for
-predicting 3D flow fields from 2D microstructures using multi-step diffusion in
-VAE latent space.
+predicting 3D flow fields from 2D microstructures using diffusion in a shared VAE
+latent space.
 
 Architecture Overview:
-    2D Input (microstructure + 2D flow) → E2D Encoder → Latent z
-                                                          ↓
-                                              Diffusion U-Net (denoising)
-                                                          ↓
-                                              D3D Decoder → 3D Flow Output
-
-Key Components:
-    - LatentDiffusionPredictor: Main predictor combining VAE encoding/decoding with 
-      diffusion-based denoising for 3D flow prediction.
-    - DualBranchVAE: Supports separate E2D (2D encoder) and D3D (3D decoder) branches
-      trained in two stages.
+    2D Input (microstructure + 2D flow)
+        → Shared VAE Encoder
+        → z2D
+        → Diffusion U-Net
+        → z3D
+        → Shared VAE Decoder
+    → 3D Flow Output
 
 Training Pipeline:
-    Stage 1: Train E3D + D3D on 3D velocity (VAE_model/train_3d_vae_only.py)
-    Stage 2: Train E2D aligned to E3D latent space (VAE_model/train_2d_with_cross.py)
-    Stage 3: Train diffusion U-Net (Diffusion_model/train.py)
+    Stage 1: Train one shared VAE on both 2D and 3D velocity fields (VAE_model/train_2d3d_vae.py).
+    Stage 2: Train diffusion U-Net to map z2D → z3D conditioned on microstructure (Diffusion_model/train.py).
 """
 
 from abc import ABC, abstractmethod
@@ -42,85 +37,10 @@ from utils.zenodo import download_data, unzip_data, is_url
 import sys
 sys.path.append(osp.join(osp.dirname(__file__), '..', '..'))
 from VAE_model.src.vae.autoencoder import VariationalAutoencoder
-from VAE_model.src.dual_vae.model import DualBranchVAE
+#from VAE_model.src.dual_vae.model import DualBranchVAE
 
 
 _model_type = Union[UNet, Any]
-
-
-def _map_encoder_keys(state_dict: dict) -> dict:
-    """
-    Map encoder checkpoint keys from layers.X format to named-layer format.
-    
-    Checkpoint format: layers.0, layers.1, layers.2, layers.3, layers.4, layers.5, layers.6, layers.7, layers.8, layers.9, layers.11
-    Target format: conv_in, res1_1, res1_2, down1, res2_1, res2_2, down2, res3_1, res3_2, norm_out, conv_out
-    """
-    mapping = {
-        'layers.0': 'conv_in',
-        'layers.1': 'res1_1',
-        'layers.2': 'res1_2',
-        'layers.3': 'down1',
-        'layers.4': 'res2_1',
-        'layers.5': 'res2_2',
-        'layers.6': 'down2',
-        'layers.7': 'res3_1',
-        'layers.8': 'res3_2',
-        'layers.9': 'norm_out',
-        'layers.11': 'conv_out',
-    }
-    
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        new_key = key
-        for old_prefix, new_prefix in mapping.items():
-            if key.startswith(old_prefix + '.'):
-                new_key = new_prefix + key[len(old_prefix):]
-                break
-        new_state_dict[new_key] = value
-    
-    return new_state_dict
-
-
-def _map_decoder_keys(state_dict: dict) -> dict:
-    """
-    Map decoder checkpoint keys from layers.X format to named-layer format.
-    
-    Checkpoint format: layers.0, layers.1, layers.2, (layers.3=Upsample), layers.4, layers.5, layers.6, (layers.7=Upsample), layers.8, layers.9, layers.10, layers.11, (layers.12=SiLU), layers.13
-    Target format: conv_in, res1_1, res1_2, conv_up1, res2_1, res2_2, conv_up2, res3_1, res3_2, norm_out, conv_out
-    """
-    mapping = {
-        'layers.0': 'conv_in',
-        'layers.1': 'res1_1',
-        'layers.2': 'res1_2',
-        # layers.3 is Upsample (no params)
-        'layers.4': 'conv_up1',
-        'layers.5': 'res2_1',
-        'layers.6': 'res2_2',
-        # layers.7 is Upsample (no params)
-        'layers.8': 'conv_up2',
-        'layers.9': 'res3_1',
-        'layers.10': 'res3_2',
-        'layers.11': 'norm_out',
-        # layers.12 is SiLU (no params)
-        'layers.13': 'conv_out',
-    }
-    
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        new_key = key
-        for old_prefix, new_prefix in mapping.items():
-            if key.startswith(old_prefix + '.'):
-                new_key = new_prefix + key[len(old_prefix):]
-                break
-        new_state_dict[new_key] = value
-    
-    return new_state_dict
-
-
-def _needs_key_mapping(state_dict: dict) -> bool:
-    """Check if state dict uses layers.X format (needs mapping) or named-layer format."""
-    return any(k.startswith('layers.') for k in state_dict.keys())
-
 
 class Predictor(ABC, nn.Module):
     
@@ -304,8 +224,6 @@ class LatentDiffusionPredictor(Predictor):
         model_kwargs: dict = {},
         distance_transform = True,
         vae_path: str = None,
-        vae_encoder_path: str = None,
-        vae_decoder_path: str = None,
         num_slices: int = 11,
         num_timesteps: int = 1000,
     ) -> None:
@@ -340,255 +258,37 @@ class LatentDiffusionPredictor(Predictor):
         })
         
         # Load pre-trained VAE
-        if vae_path is None and (vae_encoder_path is None or vae_decoder_path is None):
-            raise ValueError("VAE path must be provided for latent diffusion, or both encoder and decoder paths must be specified")
+        if vae_path is None: #and (vae_encoder_path is None or vae_decoder_path is None)
+            raise ValueError("VAE path must be provided for latent diffusion") # or both encoder and decoder paths must be specified")
         
         # Convert to absolute path if relative
         if vae_path is not None and not osp.isabs(vae_path):
             # Get the project root directory (2 levels up from this file)
             project_root = osp.abspath(osp.join(osp.dirname(__file__), '..', '..'))
             vae_path = osp.join(project_root, vae_path)
-        
-        # Load VAE config to get norm_factors and detect VAE type
+
+        print(f"Loading shared VAE from {vae_path}...")
+
+        # Load the single shared VAE used for both 2D and 3D fields
+        self.vae = VariationalAutoencoder.from_directory(
+            vae_path,
+            device='cpu',
+            in_channels=3,
+            latent_channels=latent_channels,
+            conditional=False
+        )
+
+        # Load the exact normalization factors used during VAE training
         vae_norm_factors = None
-        vae_conditional = None  # Whether VAE uses conditioning
-        vae_is_dual = False  # Whether this is a dual VAE
-        
-        # If separate encoder/decoder paths are provided, assume dual VAE
-        if vae_encoder_path is not None and vae_decoder_path is not None:
-            vae_is_dual = True
-            print("Detected dual VAE mode from separate encoder/decoder paths")
-            
-            # Try to load norm_factors from decoder path (which has the 3D encoder/decoder)
-            decoder_log_path = osp.join(vae_decoder_path, 'vae_log.json')
-            if osp.exists(decoder_log_path):
-                with open(decoder_log_path, 'r') as f:
-                    decoder_log = json.load(f)
-                if 'norm_factors' in decoder_log:
-                    vae_norm_factors = decoder_log['norm_factors']
-                    print(f"Loaded VAE norm_factors from decoder: {vae_norm_factors}")
-        
-        # Track what type of VAE checkpoint we have
-        vae_checkpoint_type = None  # 'standard', 'dual_full', 'dual_stage1_3d', 'dual_stage2_2d'
-        
-        if vae_path is not None:
-            vae_log_path = osp.join(vae_path, 'vae_log.json')
-            if osp.exists(vae_log_path):
-                with open(vae_log_path, 'r') as f:
-                    vae_log = json.load(f)
-                if 'norm_factors' in vae_log and vae_norm_factors is None:
-                    vae_norm_factors = vae_log['norm_factors']
-                    print(f"Loaded VAE norm_factors: {vae_norm_factors}")
-                if 'conditional' in vae_log:
-                    vae_conditional = vae_log['conditional']
-                    print(f"Loaded VAE conditional mode: {vae_conditional}")
-                # Check if this is a dual VAE (only if not already detected from paths)
-                if 'model_type' in vae_log and not vae_is_dual:
-                    vae_is_dual = (vae_log['model_type'] == 'dual')
-                    print(f"Loaded VAE model type: {'dual' if vae_is_dual else 'standard'}")
-            
-            # Auto-detect VAE checkpoint type from state dict keys
-            vae_model_files = ['vae.pt', 'best_model.pt', 'model.pt']
-            for model_file in vae_model_files:
-                model_path = osp.join(vae_path, model_file)
-                if osp.exists(model_path):
-                    state_dict = torch.load(model_path, map_location='cpu', weights_only=True)
-                    has_encoder_2d = any(k.startswith('encoder_2d.') for k in state_dict.keys())
-                    has_encoder_3d = any(k.startswith('encoder_3d.') for k in state_dict.keys())
-                    has_encoder = any(k.startswith('encoder.') for k in state_dict.keys())
-                    
-                    if has_encoder_2d and has_encoder_3d:
-                        vae_checkpoint_type = 'dual_full'
-                        vae_is_dual = True
-                        print(f"Auto-detected FULL Dual-Branch VAE (has encoder_2d + encoder_3d)")
-                    elif has_encoder_3d and not has_encoder_2d:
-                        vae_checkpoint_type = 'dual_stage1_3d'
-                        print(f"Auto-detected Stage 1 (3D only) checkpoint - needs separate encoder path for E2D")
-                    elif has_encoder_2d and not has_encoder_3d:
-                        vae_checkpoint_type = 'dual_stage2_2d'
-                        print(f"Auto-detected Stage 2 (2D only) checkpoint - needs separate decoder path for D3D")
-                    elif has_encoder:
-                        vae_checkpoint_type = 'standard'
-                        print(f"Auto-detected Standard VAE (encoder/decoder)")
-                    break
-        
-        # Store flags for use in encode/decode
-        self.vae_is_dual = vae_is_dual
-        self.vae_conditional = vae_conditional if not vae_is_dual else None  # Dual VAE doesn't use conditional flag
-        
-        # Load appropriate VAE architecture
-        if vae_is_dual or vae_checkpoint_type in ['dual_stage1_3d', 'dual_stage2_2d']:
-            # For partial checkpoints (Stage 1 or Stage 2) with only --vae-path:
-            # Use the 3D encoder for BOTH 2D encoding and 3D encoding (shared encoder approach)
-            if vae_checkpoint_type == 'dual_stage1_3d' and vae_encoder_path is None and vae_decoder_path is None:
-                print(f"\n*** Using Stage 1 (3D) VAE for both encoding and decoding ***")
-                print(f"    This uses encoder_3d for 2D input encoding (shared encoder approach)")
-                print(f"    For separate E2D/D3D, use --vae-encoder-path and --vae-decoder-path\n")
-                
-                # Load the 3D VAE and use its encoder for both 2D and 3D
-                self.vae = DualBranchVAE(
-                    in_channels=3,
-                    latent_channels=latent_channels,
-                    share_encoders=True,  # E2D = E3D (shared)
-                    share_decoders=False
-                )
-                
-                # Find model file
-                vae_model_path = None
-                for model_file in ['vae.pt', 'best_model.pt', 'model.pt']:
-                    candidate = osp.join(vae_path, model_file)
-                    if osp.exists(candidate):
-                        vae_model_path = candidate
-                        break
-                if vae_model_path is None:
-                    raise FileNotFoundError(f"No model file found in {vae_path}")
-                
-                state_dict = torch.load(vae_model_path, map_location='cpu')
-                
-                # Map encoder_3d -> encoder_2d (shared) and decoder_3d -> decoder_3d
-                # Since share_encoders=True, encoder_2d IS encoder_3d, so we only load encoder_3d
-                encoder_state = {k.replace('encoder_3d.', ''): v for k, v in state_dict.items() if k.startswith('encoder_3d.')}
-                decoder_3d_state = {k.replace('decoder_3d.', ''): v for k, v in state_dict.items() if k.startswith('decoder_3d.')}
-                
-                # Load into the shared encoder (encoder_2d = encoder_3d due to share_encoders=True)
-                self.vae.encoder_2d.load_state_dict(encoder_state)
-                self.vae.decoder_3d.load_state_dict(decoder_3d_state)
-                
-                # Also need decoder_2d for completeness (use same as decoder_3d if not available)
-                if any(k.startswith('decoder_2d.') for k in state_dict.keys()):
-                    decoder_2d_state = {k.replace('decoder_2d.', ''): v for k, v in state_dict.items() if k.startswith('decoder_2d.')}
-                else:
-                    decoder_2d_state = decoder_3d_state  # Use 3D decoder for 2D as well
-                self.vae.decoder_2d.load_state_dict(decoder_2d_state)
-                
-                print(f"Loaded VAE from {vae_model_path} (shared encoder mode)")
-                self.vae_is_dual = True
-                
-            elif vae_checkpoint_type == 'dual_stage2_2d' and vae_encoder_path is None and vae_decoder_path is None:
-                raise ValueError(
-                    f"Detected Stage 2 (2D only) checkpoint at {vae_path}. "
-                    f"This checkpoint only has encoder_2d/decoder_2d but diffusion needs decoder_3d.\n"
-                    f"Please provide the Stage 1 (3D) path:\n"
-                    f"  --vae-decoder-path <path_to_stage1_3d>  (contains encoder_3d + decoder_3d)"
-                )
-            
-            # Check if separate encoder/decoder paths are provided
-            elif vae_encoder_path is not None or vae_decoder_path is not None:
-                print(f"Loading Dual-Branch VAE with separate encoder/decoder paths...")
-                
-                # Use provided paths or fall back to main vae_path
-                encoder_path = vae_encoder_path if vae_encoder_path is not None else vae_path
-                decoder_path = vae_decoder_path if vae_decoder_path is not None else vae_path
-                
-                # Convert to absolute paths if relative (resolve from CWD)
-                encoder_path = osp.abspath(encoder_path)
-                decoder_path = osp.abspath(decoder_path)
-                
-                print(f"  Encoder from: {encoder_path}")
-                print(f"  Decoder from: {decoder_path}")
-                
-                # Load dual VAE architecture
-                self.vae = DualBranchVAE(
-                    in_channels=3,
-                    latent_channels=latent_channels,
-                    share_encoders=False,
-                    share_decoders=False
-                )
-                
-                # Load encoder weights (E2D from stage 2)
-                encoder_model_path = None
-                for fname in ['best_model.pt', 'vae.pt', 'model.pt']:
-                    candidate = osp.join(encoder_path, fname)
-                    if osp.exists(candidate):
-                        encoder_model_path = candidate
-                        break
-                if encoder_model_path is None:
-                    raise FileNotFoundError(f"No model file found in encoder path: {encoder_path}")
-                encoder_state = torch.load(encoder_model_path, map_location='cpu')
-                
-                # Load decoder weights (D3D from stage 1)
-                decoder_model_path = None
-                for fname in ['best_model.pt', 'vae.pt', 'model.pt']:
-                    candidate = osp.join(decoder_path, fname)
-                    if osp.exists(candidate):
-                        decoder_model_path = candidate
-                        break
-                if decoder_model_path is None:
-                    raise FileNotFoundError(f"No model file found in decoder path: {decoder_path}")
-                decoder_state = torch.load(decoder_model_path, map_location='cpu')
-                
-                # Extract encoder_2d weights from encoder checkpoint
-                # Check if encoder checkpoint has 'encoder_2d.' keys (dual VAE) or 'encoder.' keys (standard VAE)
-                if any(k.startswith('encoder_2d.') for k in encoder_state.keys()):
-                    encoder_2d_state = {k.replace('encoder_2d.', ''): v for k, v in encoder_state.items() if k.startswith('encoder_2d.')}
-                elif any(k.startswith('encoder.') for k in encoder_state.keys()):
-                    encoder_2d_state = {k.replace('encoder.', ''): v for k, v in encoder_state.items() if k.startswith('encoder.')}
-                else:
-                    raise ValueError(f"Cannot find encoder weights in {encoder_model_path}. Expected keys starting with 'encoder_2d.' or 'encoder.'")
-                # Apply key mapping if checkpoint uses named-layer format
-                if _needs_key_mapping(encoder_2d_state):
-                    encoder_2d_state = _map_encoder_keys(encoder_2d_state)
-                    print(f"  Applied key mapping for E2D encoder")
-                self.vae.encoder_2d.load_state_dict(encoder_2d_state)
-                print(f"  Loaded E2D encoder from {encoder_model_path}")
-                
-                # Extract decoder_3d weights from decoder checkpoint
-                # Check if decoder checkpoint has 'decoder_3d.' keys (dual VAE) or 'decoder.' keys (standard VAE)
-                if any(k.startswith('decoder_3d.') for k in decoder_state.keys()):
-                    decoder_3d_state = {k.replace('decoder_3d.', ''): v for k, v in decoder_state.items() if k.startswith('decoder_3d.')}
-                elif any(k.startswith('decoder.') for k in decoder_state.keys()):
-                    decoder_3d_state = {k.replace('decoder.', ''): v for k, v in decoder_state.items() if k.startswith('decoder.')}
-                else:
-                    raise ValueError(f"Cannot find decoder weights in {decoder_model_path}. Expected keys starting with 'decoder_3d.' or 'decoder.'")
-                # Apply key mapping if checkpoint uses named-layer format
-                if _needs_key_mapping(decoder_3d_state):
-                    decoder_3d_state = _map_decoder_keys(decoder_3d_state)
-                    print(f"  Applied key mapping for D3D decoder")
-                self.vae.decoder_3d.load_state_dict(decoder_3d_state)
-                print(f"  Loaded D3D decoder from {decoder_model_path}")
-                
-                # Also load encoder_3d from decoder checkpoint (for encode_target)
-                # Check if decoder checkpoint has 'encoder_3d.' keys (dual VAE) or 'encoder.' keys (standard VAE)
-                if any(k.startswith('encoder_3d.') for k in decoder_state.keys()):
-                    encoder_3d_state = {k.replace('encoder_3d.', ''): v for k, v in decoder_state.items() if k.startswith('encoder_3d.')}
-                elif any(k.startswith('encoder.') for k in decoder_state.keys()):
-                    encoder_3d_state = {k.replace('encoder.', ''): v for k, v in decoder_state.items() if k.startswith('encoder.')}
-                else:
-                    raise ValueError(f"Cannot find encoder_3d weights in {decoder_model_path}. Expected keys starting with 'encoder_3d.' or 'encoder.'")
-                # Apply key mapping if checkpoint uses named-layer format
-                if _needs_key_mapping(encoder_3d_state):
-                    encoder_3d_state = _map_encoder_keys(encoder_3d_state)
-                    print(f"  Applied key mapping for E3D encoder")
-                self.vae.encoder_3d.load_state_dict(encoder_3d_state)
-                print(f"  Loaded E3D encoder from {decoder_model_path} (for target encoding)")
-                
-                # Mark as dual VAE for encode/decode methods
-                self.vae_is_dual = True
-                
-            else:
-                # Load from single path - only works for FULL dual VAE checkpoint
-                print(f"Loading FULL Dual-Branch VAE from {vae_path}...")
-                self.vae = DualBranchVAE.from_directory(
-                    vae_path,
-                    device='cpu',
-                    in_channels=3,
-                    latent_channels=latent_channels
-                )
-        else:
-            # Use default if not found in log (non-conditional is simpler default)
-            if vae_conditional is None:
-                vae_conditional = False
-                print(f"WARNING: VAE conditional mode not found in log. Defaulting to False (non-conditional).")
-            
-            # Load standard VAE with correct architecture (3 input channels from velocity only)
-            # Use latent_channels from model_kwargs if provided (should match output channels)
-            print(f"Loading Standard VAE from {vae_path}...")
-            self.vae = VariationalAutoencoder.from_directory(
-                vae_path,
-                in_channels=3,  # 3 channels: velocity (vx, vy, vz)
-                latent_channels=latent_channels,
-                conditional=vae_conditional
-            )
+        vae_log_path = osp.join(vae_path, 'vae_log.json')
+
+        if osp.exists(vae_log_path):
+            with open(vae_log_path, 'r') as f:
+                vae_log = json.load(f)
+
+            if 'norm_factors' in vae_log:
+                vae_norm_factors = vae_log['norm_factors']
+                print(f"Loaded VAE norm_factors: {vae_norm_factors}")
         
         # Update output normalizer with VAE's norm_factors if available
         if vae_norm_factors is not None:
@@ -596,10 +296,11 @@ class LatentDiffusionPredictor(Predictor):
             self.normalizer['output'] = MaxNormalizer(scale_factors=vae_norm_factors)
             print(f"Set output normalizer to per-component: {vae_norm_factors}")
         else:
-            print("WARNING: VAE norm_factors not found. Using default normalization.")
+            raise ValueError(f"Could not find 'norm_factors' in {vae_log_path}")
+            #print("WARNING: VAE norm_factors not found. Using default normalization.")
         
         # Store whether VAE norm_factors were loaded (to prevent overriding)
-        self._vae_norm_loaded = vae_norm_factors is not None
+        self._vae_norm_loaded = True #vae_norm_factors is not None
         
         # Freeze VAE parameters
         for param in self.vae.parameters():
@@ -607,10 +308,7 @@ class LatentDiffusionPredictor(Predictor):
         self.vae.eval()
         
         print(f'Initialized {self.type} predictor with {self.trainable_params} parameters.')
-        if vae_path is not None:
-            print(f'Loaded VAE from {vae_path} (frozen).')
-        else:
-            print(f'Loaded VAE with separate encoder/decoder (frozen).')
+        print(f'Loaded VAE from {vae_path} (frozen).')
         
     def set_normalizer(self, norm_dict: dict):
         """
@@ -651,12 +349,9 @@ class LatentDiffusionPredictor(Predictor):
         # Get latent dimensions from VAE encoder (uses 3D conv, expects 5D input)
         with torch.no_grad():
             # Create dummy input: (batch, channels, depth, height, width)
-            dummy_5d = torch.zeros(1, 3, num_slices, img.shape[3], img.shape[4]).to(device)
-            if self.vae_is_dual:
-                latent_shape = self.vae.encoder_2d(dummy_5d)[0].shape  # (1, latent_channels, depth, H/4, W/4)
-            else:
-                dummy_condition = torch.zeros(1, dtype=torch.bool, device=device) if self.vae_conditional else None
-                latent_shape = self.vae.encoder(dummy_5d, condition=dummy_condition)[0].shape  # (1, latent_channels, depth, H/4, W/4) - depth preserved!
+            dummy_5d = torch.zeros(1, 3, num_slices, img.shape[3], img.shape[4], device=device)
+            latent_shape = self.vae.encoder(dummy_5d)[0].shape  # (1, latent_channels, depth, H/4, W/4)
+
             latent_channels = latent_shape[1]
             latent_depth = latent_shape[2]
             latent_h, latent_w = latent_shape[3], latent_shape[4]
@@ -679,13 +374,7 @@ class LatentDiffusionPredictor(Predictor):
         # Encode 2D velocity to latent space for conditioning
         # CRITICAL: Use deterministic encoding (mu only) for consistent conditioning
         with torch.no_grad():
-            if self.vae_is_dual:
-                # Dual VAE: use E2D encoder deterministically (mu only, no sampling)
-                velocity_2d_latent_5d, _ = self.vae.encode_2d_deterministic(velocity_2d_norm_5d)
-            else:
-                # Standard VAE: use condition=False for U_2d (2D flow with w=0)
-                condition_2d = torch.zeros(batch_size, dtype=torch.bool, device=device) if self.vae_conditional else None
-                velocity_2d_latent_5d, _ = self.vae.encode(velocity_2d_norm_5d, condition=condition_2d)  # (batch, latent_channels, depth, H/4, W/4) - depth preserved!
+            velocity_2d_latent_5d, _ = self.vae.encoder(velocity_2d_norm_5d)
         
         # Permute to (batch, depth, latent_channels, H, W)
         velocity_2d_latent = velocity_2d_latent_5d.permute(0, 2, 1, 3, 4)
@@ -763,15 +452,11 @@ class LatentDiffusionPredictor(Predictor):
         
         # Get dimensions
         with torch.no_grad():
-             dummy_5d = torch.zeros(1, 3, num_slices, img.shape[3], img.shape[4]).to(device)
-             if self.vae_is_dual:
-                 latent_shape = self.vae.encoder_2d(dummy_5d)[0].shape
-             else:
-                 dummy_condition = torch.zeros(1, dtype=torch.bool, device=device) if self.vae_conditional else None
-                 latent_shape = self.vae.encoder(dummy_5d, condition=dummy_condition)[0].shape
-             latent_channels = latent_shape[1]
-             latent_depth = latent_shape[2]
-             latent_h, latent_w = latent_shape[3], latent_shape[4]
+            dummy_5d = torch.zeros(1, 3, num_slices, img.shape[3], img.shape[4], device=device)
+            latent_shape = self.vae.encoder(dummy_5d)[0].shape
+            latent_channels = latent_shape[1]
+            latent_depth = latent_shape[2]
+            latent_h, latent_w = latent_shape[3], latent_shape[4]
              
         # Prepare conditioning
         velocity_2d_permuted = velocity_2d.permute(0, 2, 1, 3, 4)
@@ -788,13 +473,8 @@ class LatentDiffusionPredictor(Predictor):
         ).permute(0, 2, 1, 3, 4)  # (batch, 3, depth, H, W)
         
         with torch.no_grad():
-            if self.vae_is_dual:
-                # Dual VAE: use E2D encoder deterministically (mu only, no sampling)
-                velocity_2d_latent_5d, _ = self.vae.encode_2d_deterministic(velocity_2d_norm_5d)
-            else:
-                # Standard VAE: use condition=False for U_2d (2D flow with w=0)
-                condition_2d = torch.zeros(batch_size, dtype=torch.bool, device=device) if self.vae_conditional else None
-                velocity_2d_latent_5d, _ = self.vae.encode(velocity_2d_norm_5d, condition=condition_2d)
+            velocity_2d_latent_5d, _ = self.vae.encoder(velocity_2d_norm_5d)
+    
         velocity_2d_latent = velocity_2d_latent_5d.permute(0, 2, 1, 3, 4)
         
         feats_flat = self.pre_process(img_flat)
@@ -857,13 +537,7 @@ class LatentDiffusionPredictor(Predictor):
         predicted_latents_5d = predicted_latents.permute(0, 2, 1, 3, 4)
         
         with torch.no_grad():
-            if self.vae_is_dual:
-                # Dual VAE: use D3D decoder (specifically for 3D flow output)
-                velocity_5d = self.vae.decode_3d(predicted_latents_5d)
-            else:
-                # Standard VAE: use condition=True for 3D output (we want 3D flow with w≠0)
-                condition_3d = torch.ones(batch_size, dtype=torch.bool, device=device) if self.vae_conditional else None
-                velocity_5d = self.vae.decode(predicted_latents_5d, condition=condition_3d)
+            velocity_5d = self.vae.decoder(predicted_latents_5d)
         
         # Permute back to (batch, num_slices, 3, H, W)
         velocity_3d = velocity_5d.permute(0, 2, 1, 3, 4)
@@ -914,15 +588,12 @@ class LatentDiffusionPredictor(Predictor):
         
         # Get dimensions
         with torch.no_grad():
-            dummy_5d = torch.zeros(1, 3, num_slices, img.shape[3], img.shape[4]).to(device)
-            if self.vae_is_dual:
-                latent_shape = self.vae.encoder_2d(dummy_5d)[0].shape
-            else:
-                dummy_condition = torch.zeros(1, dtype=torch.bool, device=device) if self.vae_conditional else None
-                latent_shape = self.vae.encoder(dummy_5d, condition=dummy_condition)[0].shape
+            dummy_5d = torch.zeros(1, 3, num_slices, img.shape[3], img.shape[4], device=device)
+            latent_shape = self.vae.encoder(dummy_5d)[0].shape
             latent_channels = latent_shape[1]
             latent_depth = latent_shape[2]
-            latent_h, latent_w = latent_shape[3], latent_shape[4]
+            latent_h = latent_shape[3]
+            latent_w = latent_shape[4]
              
         # Prepare conditioning
         velocity_2d_permuted = velocity_2d.permute(0, 2, 1, 3, 4)
@@ -939,12 +610,8 @@ class LatentDiffusionPredictor(Predictor):
         ).permute(0, 2, 1, 3, 4)  # (batch, 3, depth, H, W)
         
         with torch.no_grad():
-            if self.vae_is_dual:
-                # Use deterministic encoding (mu only, no sampling) for consistent conditioning
-                velocity_2d_latent_5d, _ = self.vae.encode_2d_deterministic(velocity_2d_norm_5d)
-            else:
-                condition_2d = torch.zeros(batch_size, dtype=torch.bool, device=device) if self.vae_conditional else None
-                velocity_2d_latent_5d, _ = self.vae.encode(velocity_2d_norm_5d, condition=condition_2d)
+            velocity_2d_latent_5d, _ = self.vae.encoder(velocity_2d_norm_5d)
+
         velocity_2d_latent = velocity_2d_latent_5d.permute(0, 2, 1, 3, 4)
         
         feats_flat = self.pre_process(img_flat)
@@ -994,13 +661,7 @@ class LatentDiffusionPredictor(Predictor):
         predicted_latents_5d = predicted_latents.permute(0, 2, 1, 3, 4)
         
         with torch.no_grad():
-            if self.vae_is_dual:
-                # Dual VAE: use D3D decoder (specifically for 3D flow output)
-                velocity_5d = self.vae.decode_3d(predicted_latents_5d)
-            else:
-                # Standard VAE: use condition=True for 3D output
-                condition_3d = torch.ones(batch_size, dtype=torch.bool, device=device) if self.vae_conditional else None
-                velocity_5d = self.vae.decode(predicted_latents_5d, condition=condition_3d)
+            velocity_5d = self.vae.decoder(predicted_latents_5d)
         
         velocity_3d = velocity_5d.permute(0, 2, 1, 3, 4)
         
@@ -1071,27 +732,13 @@ class LatentDiffusionPredictor(Predictor):
         # Encode velocity target with E3D encoder (no gradient through VAE)
         # CRITICAL: Use deterministic encoding (mu only) to avoid random sampling noise
         with torch.no_grad():
-            if self.vae_is_dual:
-                # Dual VAE: always use E3D encoder for 3D velocity targets
-                latent_5d, _ = self.vae.encode_3d_deterministic(velocity_norm_5d)
-            else:
-                # Standard VAE: use condition=True for target U (3D flow with w≠0)
-                condition_3d = torch.ones(batch_size, dtype=torch.bool, device=velocity_3d.device) if self.vae_conditional else None
-                latent_5d, _ = self.vae.encode(velocity_norm_5d, condition=condition_3d)  # (batch, latent_channels, depth/4, H/4, W/4)
+            latent_5d, _ = self.vae.encoder(velocity_norm_5d)
         
         # Permute back to (batch, depth, latent_channels, H, W) to match expected output
         latents = latent_5d.permute(0, 2, 1, 3, 4)  # (batch, depth/4, latent_channels, H/4, W/4)
         
         return latents
-
-
-
-
-
-
-
-
-
+    
 
 def apply_distance_transform(imgs: torch.Tensor):
     """

@@ -47,7 +47,7 @@ parser.add_argument(
 parser.add_argument(
     '--save-dir',
     type=str,
-    default='./trained/',
+    default='Diffusion_model/trained/',
     help='Directory where to save results.'
 )
 parser.add_argument(
@@ -446,8 +446,8 @@ def process_args(args: argparse.Namespace):
                 },
                 'distance_transform': args.distance_transform,
                 'vae_path': args.vae_path,
-                'vae_encoder_path': args.vae_encoder_path,
-                'vae_decoder_path': args.vae_decoder_path,
+                #'vae_encoder_path': args.vae_encoder_path,
+                #'vae_decoder_path': args.vae_decoder_path,
                 'num_slices': args.num_slices,
                 'num_timesteps': args.num_timesteps
             }
@@ -497,7 +497,7 @@ def make_log_folder(param_dict: dict):
 
 
     # Create log folder
-    time_stamp = datetime.now().strftime("%Y%m%d")
+    time_stamp = datetime.now().strftime("%Y%m%d-%H%M")
     
     descr_str = f'in-{in_channels}-out-{out_channels}-' \
         f'f-{len(features)}-k-{kernel_size}-p-{padding_mode}-a-{attention}-' \

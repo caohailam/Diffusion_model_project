@@ -4,23 +4,16 @@ Training script for latent diffusion model.
 This script trains a U-Net to denoise latents for 3D velocity prediction from 2D inputs.
 
 Prerequisites:
-    - Stage 1 VAE trained: VAE_model/train_3d_vae_only.py
-    - Stage 2 E2D trained: VAE_model/train_2d_with_cross.py
+    - Shared VAE trained on both 2D and 3D velocity fields
+      (VAE_model/train_2d3d_vae.py)
 
 Usage:
-    python train.py \\
-        --root-dir "path/to/dataset_3d" \\
-        --vae-encoder-path "VAE_model/trained/stage2" \\
-        --vae-decoder-path "VAE_model/trained/stage1" \\
-        --in-channels 17 --out-channels 8 \\
-        --features 64 128 256 512 1024 \\
+    python Diffusion_model/train.py \
+        --root-dir "path/to/dataset_3d" \
+        --vae-path "VAE-model/trained/vae_common" \
+        --in-channels 17 --out-channels 8 \
+        --features 64 128 256 512 1024 \
         --batch-size 3 --num-epochs 100
-
-Outputs:
-    - trained/<timestamp>_unet_latent-diffusion_<hyperparams>/
-        - model.pt: Final model weights
-        - best_model.pt: Best validation loss weights
-        - log.json: Training history and configuration
 """
 
 import time
@@ -244,11 +237,8 @@ def train(
         
         from src.helper import select_input_output
         
-        if isinstance(predictor, LatentDiffusionPredictor):
-            option = 'latent-diffusion'
-        else:
-            raise ValueError(f"Unknown predictor:  {type(predictor)}")
-        
+        option = 'latent-diffusion'
+
         test_loss = 0
         num_test_batch = len(test_loader)
         with torch.no_grad():
@@ -282,54 +272,54 @@ def train(
     return avg_train_loss, avg_val_loss
 
 
-def objective(trial: Trial):
-    """Objective function for hyper-parameter tuning."""
+# def objective(trial: Trial):
+#     """Objective function for hyper-parameter tuning."""
 
-    # sample hyper-parameters
-    args.batch_size = trial.suggest_int(
-        "batch_size",
-        args.range_batch_size[0],
-        args.range_batch_size[1]
-    )
-    args.kernel_size = trial.suggest_int(
-        "kernel_size",
-        args.range_kernel_size[0],
-        args.range_kernel_size[1],
-        step=2
-    )
-    levels = trial.suggest_int(
-        "levels",
-        args.range_level[0],
-        args.range_level[1]
-    )
-    factors = [2**val for val in range(levels)]
-    if args.top_bottom:
-        args.features = [args.top_feature_channels * val for val in factors]
-    else:
-        args.features = [int(args.bottom_feature_channels / val) for val in reversed(factors)]
+#     # sample hyper-parameters
+#     args.batch_size = trial.suggest_int(
+#         "batch_size",
+#         args.range_batch_size[0],
+#         args.range_batch_size[1]
+#     )
+#     args.kernel_size = trial.suggest_int(
+#         "kernel_size",
+#         args.range_kernel_size[0],
+#         args.range_kernel_size[1],
+#         step=2
+#     )
+#     levels = trial.suggest_int(
+#         "levels",
+#         args.range_level[0],
+#         args.range_level[1]
+#     )
+#     factors = [2**val for val in range(levels)]
+#     if args.top_bottom:
+#         args.features = [args.top_feature_channels * val for val in factors]
+#     else:
+#         args.features = [int(args.bottom_feature_channels / val) for val in reversed(factors)]
 
-    args.learning_rate = trial.suggest_float(
-        "learning_rate",
-        args.range_learning_rate[0],
-        args.range_learning_rate[1],
-        log=True
-    )
+#     args.learning_rate = trial.suggest_float(
+#         "learning_rate",
+#         args.range_learning_rate[0],
+#         args.range_learning_rate[1],
+#         log=True
+#     )
     
-    # load data
-    train_loader, val_loader, test_loader = get_loader(
-        root_dir=args.root_dir,
-        batch_size=args.batch_size,
-        shuffle=args.shuffle,
-        augment=args.augment,
-        k_folds=None,
-        num_workers=0,
-        use_3d=args.use_3d
-    )[0]
+#     # load data
+#     train_loader, val_loader, test_loader = get_loader(
+#         root_dir=args.root_dir,
+#         batch_size=args.batch_size,
+#         shuffle=args.shuffle,
+#         augment=args.augment,
+#         k_folds=None,
+#         num_workers=0,
+#         use_3d=args.use_3d
+#     )[0]
 
-    # train
-    _, val_loss = train(train_loader, val_loader, test_loader, trial)
+#     # train
+#     _, val_loss = train(train_loader, val_loader, test_loader, trial)
 
-    return val_loss
+#     return val_loss
 
 
 if __name__=='__main__':
@@ -373,35 +363,35 @@ if __name__=='__main__':
             train(train_loader, val_loader, test_loader)
 
 
-    elif args.mode == 'optimize':
+    # elif args.mode == 'optimize':
 
-        # Create SQL engine
-        db_path = osp.abspath(
-            osp.join(args.save_dir, f'study.db')
-        )
-        url = f"sqlite:////{db_path}"
-        engine = create_engine(url)
+    #     # Create SQL engine
+    #     db_path = osp.abspath(
+    #         osp.join(args.save_dir, f'study.db')
+    #     )
+    #     url = f"sqlite:////{db_path}"
+    #     engine = create_engine(url)
 
-        # Set up study
-        study = optuna.create_study(
-            direction='minimize',
-            study_name=args.name,
-            storage=url
-        )
-        study.optimize(objective, n_trials=args.n_trials)
+    #     # Set up study
+    #     study = optuna.create_study(
+    #         direction='minimize',
+    #         study_name=args.name,
+    #         storage=url
+    #     )
+    #     study.optimize(objective, n_trials=args.n_trials)
 
-        pruned_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]
-        complete_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    #     pruned_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]
+    #     complete_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
 
-        print("Study statistics:")
-        print("\t Number of finished trials: ", len(study.trials))
-        print("\t Number of pruned trials: ", len(pruned_trials))
-        print("\t Number of complete trials: ", len(complete_trials))
+    #     print("Study statistics:")
+    #     print("\t Number of finished trials: ", len(study.trials))
+    #     print("\t Number of pruned trials: ", len(pruned_trials))
+    #     print("\t Number of complete trials: ", len(complete_trials))
 
-        print("Best trial:")
-        trial = study.best_trial
-        print("\t Value: ", trial.value)
+    #     print("Best trial:")
+    #     trial = study.best_trial
+    #     print("\t Value: ", trial.value)
 
-        print("\t Params:")
-        for key, value in trial.params.items():
-            print(f"\t {key}: {value}")
+    #     print("\t Params:")
+    #     for key, value in trial.params.items():
+    #         print(f"\t {key}: {value}")

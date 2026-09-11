@@ -28,51 +28,51 @@ class Decoder(nn.Module):
         # Only upsample in H and W, NOT in depth D
         
         # Initial conv from latent
-        self.conv_in = nn.Conv3d(self.in_channels, 512, kernel_size=self.kernel_size, padding=padding)
+        self.conv_in = nn.Conv3d(self.in_channels, 256, kernel_size=self.kernel_size, padding=padding) #512
         
         # FiLM conditioning after initial conv (when conditional=True)
         if self.conditional:
-            self.film_in = FiLM(condition_dim=1, feature_channels=512)
+            self.film_in = FiLM(condition_dim=1, feature_channels=256) #512
         
         # Stage 1: 512 channels
         if self.conditional:
-            self.res1_1 = ConditionalResidualBlock(512, 512, conditional=True, condition_dim=1)
-            self.res1_2 = ConditionalResidualBlock(512, 512, conditional=True, condition_dim=1)
+            self.res1_1 = ConditionalResidualBlock(256, 256, conditional=True, condition_dim=1) #512,512
+            self.res1_2 = ConditionalResidualBlock(256, 256, conditional=True, condition_dim=1) #512,512
         else:
-            self.res1_1 = ResidualBlock(512, 512)
-            self.res1_2 = ResidualBlock(512, 512)
+            self.res1_1 = ResidualBlock(256, 256) #512,512
+            self.res1_2 = ResidualBlock(256, 256) #512,512
         
         # Upsample 1: 2*H, 2*W
         self.up1 = nn.Upsample(scale_factor=(1, 2, 2))
-        self.conv_up1 = nn.Conv3d(512, 256, kernel_size=self.kernel_size, padding=padding)
+        self.conv_up1 = nn.Conv3d(256, 128, kernel_size=self.kernel_size, padding=padding) #512,256
         
         # Stage 2: 256 channels
         if self.conditional:
-            self.res2_1 = ConditionalResidualBlock(256, 256, conditional=True, condition_dim=1)
-            self.res2_2 = ConditionalResidualBlock(256, 256, conditional=True, condition_dim=1)
+            self.res2_1 = ConditionalResidualBlock(128, 128, conditional=True, condition_dim=1) #256,256
+            self.res2_2 = ConditionalResidualBlock(128, 128, conditional=True, condition_dim=1) #256,256
         else:
-            self.res2_1 = ResidualBlock(256, 256)
-            self.res2_2 = ResidualBlock(256, 256)
-        
+            self.res2_1 = ResidualBlock(128, 128) #256,256
+            self.res2_2 = ResidualBlock(128, 128) #256,256
+
         # Upsample 2: 4*H, 4*W
         self.up2 = nn.Upsample(scale_factor=(1, 2, 2))
-        self.conv_up2 = nn.Conv3d(256, 128, kernel_size=self.kernel_size, padding=padding)
+        self.conv_up2 = nn.Conv3d(128, 64, kernel_size=self.kernel_size, padding=padding) #256,128
         
         # Stage 3: 128 channels
         if self.conditional:
-            self.res3_1 = ConditionalResidualBlock(128, 128, conditional=True, condition_dim=1)
-            self.res3_2 = ConditionalResidualBlock(128, 128, conditional=True, condition_dim=1)
+            self.res3_1 = ConditionalResidualBlock(64, 64, conditional=True, condition_dim=1) #128,128
+            self.res3_2 = ConditionalResidualBlock(64, 64, conditional=True, condition_dim=1) #128,128
         else:
-            self.res3_1 = ResidualBlock(128, 128)
-            self.res3_2 = ResidualBlock(128, 128)
+            self.res3_1 = ResidualBlock(64, 64) #128,128
+            self.res3_2 = ResidualBlock(64, 64) #128,128
         
         # Final layers
-        self.norm_out = nn.GroupNorm(num_groups=32, num_channels=128)
-        self.conv_out = nn.Conv3d(128, self.out_channels, kernel_size=self.kernel_size, padding=padding)
+        self.norm_out = nn.GroupNorm(num_groups=32, num_channels=64) #128 
+        self.conv_out = nn.Conv3d(64, self.out_channels, kernel_size=self.kernel_size, padding=padding) #128
         
         # Final FiLM before output (can help generate condition-specific outputs)
         if self.conditional:
-            self.film_pre_out = FiLM(condition_dim=1, feature_channels=128)
+            self.film_pre_out = FiLM(condition_dim=1, feature_channels=64) #128
 
         print(f'Trainable parameters: {self.trainable_params}.')
 
